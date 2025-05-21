@@ -1,9 +1,10 @@
-streamlit
 ccxt
-scikit-learn
 pandas
 numpy
 ta
-xgboost
-lightgbm
+scikit-learn
+streamlit
 plotly
+lightgbm
+xgboost
+streamlit-option-menu
