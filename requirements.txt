@@ -6,3 +6,4 @@ numpy
 ta
 xgboost
 lightgbm
+plotly
