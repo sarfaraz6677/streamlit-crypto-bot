@@ -19,11 +19,18 @@ from streamlit_option_menu import option_menu
 st.set_page_config(layout='wide')
 st.title("🚀 SarfaraJ & Faisal's Trading Bot (BTC/USDT)")
 
-exchange = ccxt.binance({
+#exchange = ccxt.binance({
+#    'enableRateLimit': True,
+#    'options': {'adjustForTimeDifference': True}
+#})
+
+exchange = ccxt.bybit({
     'enableRateLimit': True,
     'options': {'adjustForTimeDifference': True}
 })
-symbol = 'BTC/USDT'
+symbol = 'BTC/USDT'  # Bybit me bhi ye symbol chal jayega
+
+#symbol = 'BTC/USDT'
 
 st.markdown(f"<div style='font-size:24px; font-weight:bold; color:green;'>🕒 Last Updated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC</div>", unsafe_allow_html=True)
 
