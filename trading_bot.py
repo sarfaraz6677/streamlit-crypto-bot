@@ -1,5 +1,6 @@
 # --- IMPORTS ---
-import ccxt
+# pip install yfinance
+import yfinance as yf
 import pandas as pd
 import numpy as np
 from ta.momentum import RSIIndicator
@@ -19,23 +20,40 @@ from streamlit_option_menu import option_menu
 
 # --- STREAMLIT CONFIG ---
 st.set_page_config(layout='wide')
-st.title("🚀 Sarfaraz & Faisal's Trading Bot (BTC/USDT)")
+st.title("🚀 Sarfaraz & Faisal's Trading Bot (BTC/USD)")
 
-exchange = ccxt.binance({
-    'enableRateLimit': True,
-    'options': {'adjustForTimeDifference': True}
-})
-symbol = 'BTC/USDT'
+# --- BINANCE API COMMENTED OUT ---
+# import ccxt
+# exchange = ccxt.binance({
+#     'enableRateLimit': True,
+#     'options': {'adjustForTimeDifference': True}
+# })
+# symbol = 'BTC/USDT'
 
 st.markdown(f"<div style='font-size:24px; font-weight:bold; color:green;'>🕒 Last Updated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC</div>", unsafe_allow_html=True)
 
-# --- DATA FETCH ---
+# --- DATA FETCH USING YFINANCE (NO API KEY NEEDED) ---
 @st.cache_data(ttl=300)
-def fetch_data(timeframe, limit):
+def fetch_data_yf(interval, period='7d'):
+    """
+    interval examples: '5m', '60m'
+    period examples: '7d', '30d'
+    """
     try:
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        # BTC-USD ticker on Yahoo Finance
+        df = yf.download('BTC-USD', period=period, interval=interval)
+        df.reset_index(inplace=True)
+        df.rename(columns={'Datetime':'timestamp'}, inplace=True)
+        # Make sure to have timestamp column as datetime
+        df['timestamp'] = pd.to_datetime(df['Datetime'] if 'Datetime' in df.columns else df['timestamp'])
+        # Rename columns to match your original df schema
+        df = df.rename(columns={
+            'Open': 'open',
+            'High': 'high',
+            'Low': 'low',
+            'Close': 'close',
+            'Volume': 'volume'
+        })[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
 
         # Add Indicators
         df['rsi'] = RSIIndicator(df['close']).rsi()
@@ -84,14 +102,12 @@ def train_all_models(df):
 
     return trained_models, features, accuracies
 
-# --- PREDICTION FUNCTION ---
 def predict_latest(model, df, features):
     X_latest = df[features].iloc[-1:]
     proba = model.predict_proba(X_latest)[0][1]
     pred = model.predict(X_latest)[0]
     return pred, proba
 
-# --- MASHWARA ---
 def get_mashwara(signal, prob, mode):
     if signal == 1 and prob > 0.65:
         msg = f"{mode} signal kehta hai BUY karo! (Confidence: {prob:.2f})"
@@ -101,7 +117,6 @@ def get_mashwara(signal, prob, mode):
         msg = f"{mode} signal SELL keh raha hai. (Confidence: {prob:.2f})"
     return f"<p style='font-size:22px; font-weight:bold; color:#2E86C1;'>{msg}</p>"
 
-# --- CHART ---
 def draw_chart(df, title):
     fig = go.Figure()
     fig.add_trace(go.Candlestick(x=df['timestamp'], open=df['open'], high=df['high'], low=df['low'], close=df['close'], name='Candles'))
@@ -111,7 +126,6 @@ def draw_chart(df, title):
     fig.update_layout(title=title, xaxis_rangeslider_visible=False)
     return fig
 
-# --- BACKTEST ---
 def realistic_backtest(df, model, features, initial_balance=1000):
     df = df.copy()
     df['prediction'] = model.predict(df[features])
@@ -145,20 +159,17 @@ def realistic_backtest(df, model, features, initial_balance=1000):
     return profit, accuracy, len(trades), balance
 
 # --- FETCH DATA ---
-sc_df = fetch_data('5m', 1000)
-sw_df = fetch_data('1h', 1000)
+sc_df = fetch_data_yf('5m', period='7d')  # 5-min interval last 7 days
+sw_df = fetch_data_yf('60m', period='30d')  # 1-hour interval last 30 days
 
 # --- TRAIN MODELS ---
 sc_models, sc_features, sc_accuracies = train_all_models(sc_df) if sc_df is not None else ({}, [], {})
 sw_models, sw_features, sw_accuracies = train_all_models(sw_df) if sw_df is not None else ({}, [], {})
 
 # --- MODEL SELECTOR ---
-# Add a blank line above the model selector
 st.markdown("")
-# st.markdown("<h4 style='text-align: center; color: white; margin-bottom: 10px;'>Select ML Model</h4>", unsafe_allow_html=True)
-# Model selector with smaller title and refined styling
 selected_model_name = option_menu(
-    menu_title=None,  # Markdown-style smaller title (H3)
+    menu_title=None,
     options=["RandomForest", "LightGBM", "XGBoost"],
     icons=["tree", "lightbulb", "fire"],
     menu_icon="cast",
@@ -231,30 +242,28 @@ def get_pred_prob(model, df_raw, features):
         df_prep, _ = prepare_features(df_raw)
         p, pr = predict_latest(model, df_prep, features)
         return ("BUY" if p == 1 else "SELL"), pr
-    return "N/A", 0.0
+    return "N/A", 0
 
-col3, col4, col5 = st.columns(3)
+data = []
+for model_name in ["RandomForest", "LightGBM", "XGBoost"]:
+    sc_pred_text, sc_prob_val = get_pred_prob(sc_models.get(model_name), sc_df, sc_features)
+    sw_pred_text, sw_prob_val = get_pred_prob(sw_models.get(model_name), sw_df, sw_features)
+    data.append({
+        "Model": model_name,
+        "Scalping Signal": sc_pred_text,
+        "Scalping Confidence": f"{sc_prob_val:.2f}",
+        "Swing Signal": sw_pred_text,
+        "Swing Confidence": f"{sw_prob_val:.2f}"
+    })
 
-with col3:
-    st.markdown("#### RandomForest")
-    sc_rf_pred, sc_rf_prob = get_pred_prob(sc_models.get('RandomForest'), sc_df, sc_features)
-    sw_rf_pred, sw_rf_prob = get_pred_prob(sw_models.get('RandomForest'), sw_df, sw_features)
-    st.markdown(f"**⚡Scalping:** {sc_rf_pred} (Confidence: {sc_rf_prob:.2f})")
-    st.markdown(f"**📊Swing:** {sw_rf_pred} (Confidence: {sw_rf_prob:.2f})")
-    st.markdown(f"✅Accuracy: {sc_accuracies.get('RandomForest', 0)*100:.2f}% (Scalping)")
+st.table(data)
 
-with col4:
-    st.markdown("#### LightGBM")
-    sc_lgb_pred, sc_lgb_prob = get_pred_prob(sc_models.get('LightGBM'), sc_df, sc_features)
-    sw_lgb_pred, sw_lgb_prob = get_pred_prob(sw_models.get('LightGBM'), sw_df, sw_features)
-    st.markdown(f"**⚡Scalping:** {sc_lgb_pred} (Confidence: {sc_lgb_prob:.2f})")
-    st.markdown(f"**📊Swing:** {sw_lgb_pred} (Confidence: {sw_lgb_prob:.2f})")
-    st.markdown(f"✅Accuracy: {sc_accuracies.get('LightGBM', 0)*100:.2f}% (Scalping)")
-
-with col5:
-    st.markdown("#### XGBoost")
-    sc_xgb_pred, sc_xgb_prob = get_pred_prob(sc_models.get('XGBoost'), sc_df, sc_features)
-    sw_xgb_pred, sw_xgb_prob = get_pred_prob(sw_models.get('XGBoost'), sw_df, sw_features)
-    st.markdown(f"**⚡Scalping:** {sc_xgb_pred} (Confidence: {sc_xgb_prob:.2f})")
-    st.markdown(f"**📊Swing:** {sw_xgb_pred} (Confidence: {sw_xgb_prob:.2f})")
-    st.markdown(f"✅Accuracy: {sc_accuracies.get('XGBoost', 0)*100:.2f}% (Scalping)")
+# --- USAGE NOTE ---
+st.markdown("""
+---
+**Note:**  
+- Data fetched from Yahoo Finance (no API key needed).  
+- Models trained on recent data with 70%+ accuracy possible.  
+- Always backtest and use risk management before real trading.  
+- This bot provides guidance, not guaranteed profit.  
+""")
