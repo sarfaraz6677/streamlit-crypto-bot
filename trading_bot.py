@@ -17,7 +17,7 @@ from streamlit_option_menu import option_menu
 
 # --- STREAMLIT CONFIG ---
 st.set_page_config(layout='wide')
-st.title("🚀 SarfaraJ & Faisal's Trading Bot (BTC/USDT)")
+st.title("🚀 Sarfaraz & Faisal's Trading Bot (BTC/USDT)")
 
 #exchange = ccxt.binance({
 #    'enableRateLimit': True,
