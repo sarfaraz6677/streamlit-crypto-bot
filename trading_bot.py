@@ -11,10 +11,8 @@ from sklearn.metrics import accuracy_score
 import streamlit as st
 import plotly.graph_objects as go
 from datetime import datetime
-import lightgbm as lgb
-import xgboost as xgb
-from xgboost import XGBClassifier
 from lightgbm import LGBMClassifier
+from xgboost import XGBClassifier
 from streamlit_option_menu import option_menu
 
 # --- STREAMLIT CONFIG ---
@@ -153,12 +151,9 @@ sc_models, sc_features, sc_accuracies = train_all_models(sc_df) if sc_df is not 
 sw_models, sw_features, sw_accuracies = train_all_models(sw_df) if sw_df is not None else ({}, [], {})
 
 # --- MODEL SELECTOR ---
-# Add a blank line above the model selector
 st.markdown("")
-# st.markdown("<h4 style='text-align: center; color: white; margin-bottom: 10px;'>Select ML Model</h4>", unsafe_allow_html=True)
-# Model selector with smaller title and refined styling
 selected_model_name = option_menu(
-    menu_title=None,  # Markdown-style smaller title (H3)
+    menu_title=None,
     options=["RandomForest", "LightGBM", "XGBoost"],
     icons=["tree", "lightbulb", "fire"],
     menu_icon="cast",
@@ -201,60 +196,21 @@ if sw_df is not None and selected_model_name in sw_models:
 else:
     sw_pred, sw_prob, sw_profit, sw_acc, sw_trades, sw_bal = 0, 0.0, 0, 0, 0, 0.0
 
-# --- DISPLAY SIGNALS AND CHART ---
+# --- DISPLAY SIDE BY SIDE ---
 col1, col2 = st.columns(2)
 
 with col1:
-    st.subheader(f"⚡ Scalping (5 Min) - Model: {selected_model_name}")
+    st.subheader("Scalping (5-minute)")
+    st.markdown(get_mashwara(sc_pred, sc_prob, "Scalping"), unsafe_allow_html=True)
+    st.write(f"Backtest Profit: ${sc_profit:.2f}")
+    st.write(f"Backtest Accuracy: {sc_acc:.2f}% on {sc_trades} trades")
     if sc_df is not None:
-        st.plotly_chart(draw_chart(sc_df, "Scalping View"), use_container_width=True)
-        st.markdown(get_mashwara(sc_pred, sc_prob, f"Scalping ({selected_model_name})"), unsafe_allow_html=True)
-        st.markdown(f"💰 **Final Balance:** ${sc_bal:.2f}")
-        st.markdown(f"📈 **Profit:** ${sc_profit:.2f}")
-        st.markdown(f"✅ **Accuracy:** {sc_acc:.2f}% over {sc_trades} trades")
+        st.plotly_chart(draw_chart(sc_df, "BTC/USDT Scalping Chart"), use_container_width=True)
 
 with col2:
-    st.subheader(f"📊 Swing Trading (1 Hour) - Model: {selected_model_name}")
+    st.subheader("Swing (1-hour)")
+    st.markdown(get_mashwara(sw_pred, sw_prob, "Swing"), unsafe_allow_html=True)
+    st.write(f"Backtest Profit: ${sw_profit:.2f}")
+    st.write(f"Backtest Accuracy: {sw_acc:.2f}% on {sw_trades} trades")
     if sw_df is not None:
-        st.plotly_chart(draw_chart(sw_df, "Swing View"), use_container_width=True)
-        st.markdown(get_mashwara(sw_pred, sw_prob, f"Swing ({selected_model_name})"), unsafe_allow_html=True)
-        st.markdown(f"💰 **Final Balance:** ${sw_bal:.2f}")
-        st.markdown(f"📈 **Profit:** ${sw_profit:.2f}")
-        st.markdown(f"✅ **Accuracy:** {sw_acc:.2f}% over {sw_trades} trades")
-
-# --- SIDE-BY-SIDE COMPARISON ---
-st.markdown("---")
-st.markdown("### 🤖 Side-by-side ML Model Predictions & Confidence")
-
-def get_pred_prob(model, df_raw, features):
-    if model and df_raw is not None:
-        df_prep, _ = prepare_features(df_raw)
-        p, pr = predict_latest(model, df_prep, features)
-        return ("BUY" if p == 1 else "SELL"), pr
-    return "N/A", 0.0
-
-col3, col4, col5 = st.columns(3)
-
-with col3:
-    st.markdown("#### RandomForest")
-    sc_rf_pred, sc_rf_prob = get_pred_prob(sc_models.get('RandomForest'), sc_df, sc_features)
-    sw_rf_pred, sw_rf_prob = get_pred_prob(sw_models.get('RandomForest'), sw_df, sw_features)
-    st.markdown(f"**⚡Scalping:** {sc_rf_pred} (Confidence: {sc_rf_prob:.2f})")
-    st.markdown(f"**📊Swing:** {sw_rf_pred} (Confidence: {sw_rf_prob:.2f})")
-    st.markdown(f"✅Accuracy: {sc_accuracies.get('RandomForest', 0)*100:.2f}% (Scalping)")
-
-with col4:
-    st.markdown("#### LightGBM")
-    sc_lgb_pred, sc_lgb_prob = get_pred_prob(sc_models.get('LightGBM'), sc_df, sc_features)
-    sw_lgb_pred, sw_lgb_prob = get_pred_prob(sw_models.get('LightGBM'), sw_df, sw_features)
-    st.markdown(f"**⚡Scalping:** {sc_lgb_pred} (Confidence: {sc_lgb_prob:.2f})")
-    st.markdown(f"**📊Swing:** {sw_lgb_pred} (Confidence: {sw_lgb_prob:.2f})")
-    st.markdown(f"✅Accuracy: {sc_accuracies.get('LightGBM', 0)*100:.2f}% (Scalping)")
-
-with col5:
-    st.markdown("#### XGBoost")
-    sc_xgb_pred, sc_xgb_prob = get_pred_prob(sc_models.get('XGBoost'), sc_df, sc_features)
-    sw_xgb_pred, sw_xgb_prob = get_pred_prob(sw_models.get('XGBoost'), sw_df, sw_features)
-    st.markdown(f"**⚡Scalping:** {sc_xgb_pred} (Confidence: {sc_xgb_prob:.2f})")
-    st.markdown(f"**📊Swing:** {sw_xgb_pred} (Confidence: {sw_xgb_prob:.2f})")
-    st.markdown(f"✅Accuracy: {sc_accuracies.get('XGBoost', 0)*100:.2f}% (Scalping)")
+        st.plotly_chart(draw_chart(sw_df, "BTC/USDT Swing Chart"), use_container_width=True)
