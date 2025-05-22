@@ -6,16 +6,15 @@ from ta.momentum import RSIIndicator
 from ta.trend import MACD, SMAIndicator, EMAIndicator
 from ta.volatility import AverageTrueRange
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import StratifiedShuffleSplit
 from sklearn.metrics import accuracy_score
 import streamlit as st
 import plotly.graph_objects as go
 from datetime import datetime
-import lightgbm as lgb
-import xgboost as xgb
-from xgboost import XGBClassifier
 from lightgbm import LGBMClassifier
+from xgboost import XGBClassifier
 from streamlit_option_menu import option_menu
+import hashlib
 
 # --- STREAMLIT CONFIG ---
 st.set_page_config(layout='wide')
@@ -27,7 +26,10 @@ exchange = ccxt.binance({
 })
 symbol = 'BTC/USDT'
 
-st.markdown(f"<div style='font-size:24px; font-weight:bold; color:green;'>🕒 Last Updated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC</div>", unsafe_allow_html=True)
+st.markdown(
+    f"<div style='font-size:24px; font-weight:bold; color:green;'>🕒 Last Updated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC</div>",
+    unsafe_allow_html=True
+)
 
 # --- DATA FETCH ---
 @st.cache_data(ttl=300)
@@ -46,6 +48,10 @@ def fetch_data(timeframe, limit):
         df['ema_14'] = EMAIndicator(df['close'], window=14).ema_indicator()
         df['atr'] = AverageTrueRange(df['high'], df['low'], df['close'], window=14).average_true_range()
 
+        # Additional Features
+        df['momentum'] = df['close'] - df['close'].shift(1)
+        df['volatility'] = df['high'] - df['low']
+
         return df.dropna()
     except Exception as e:
         st.error(f"Data fetch error: {e}")
@@ -56,27 +62,40 @@ def prepare_features(df):
     df['macd_hist'] = df['macd'] - df['macd_signal']
     df['rsi_diff'] = df['rsi'] - 50
     df['price_change'] = df['close'] - df['open']
-    features = ['rsi', 'macd', 'macd_signal', 'macd_hist', 'rsi_diff', 'price_change', 'sma_14', 'ema_14', 'atr']
+    features = [
+        'rsi', 'macd', 'macd_signal', 'macd_hist', 'rsi_diff',
+        'price_change', 'sma_14', 'ema_14', 'atr', 'momentum', 'volatility'
+    ]
     return df.dropna(), features
 
-@st.cache_resource
-def train_all_models(df):
+def hash_df(df):
+    return hashlib.md5(pd.util.hash_pandas_object(df, index=True).values).hexdigest()
+
+@st.cache_resource(show_spinner=False)
+def train_all_models(df_hash, df):
     df, features = prepare_features(df)
     X = df[features]
     y = df['target']
-    X_train, X_test, y_train, y_test = train_test_split(X, y, shuffle=False, test_size=0.25)
+    sss = StratifiedShuffleSplit(n_splits=1, test_size=0.25, random_state=42)
+    train_idx, test_idx = next(sss.split(X, y))
+    X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+    y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
 
     models = {
-        'RandomForest': RandomForestClassifier(n_estimators=300, max_depth=10, random_state=42),
-        'LightGBM': LGBMClassifier(n_estimators=300, max_depth=10, min_child_samples=20, random_state=42),
-        'XGBoost': XGBClassifier(n_estimators=300, max_depth=10, eval_metric='logloss', random_state=42)
+        'RandomForest': RandomForestClassifier(n_estimators=400, max_depth=15, random_state=42, n_jobs=-1),
+        'LightGBM': LGBMClassifier(n_estimators=400, max_depth=15, min_child_samples=10, random_state=42, n_jobs=-1),
+        'XGBoost': XGBClassifier(n_estimators=400, max_depth=15, eval_metric='logloss', use_label_encoder=False, random_state=42, n_jobs=-1)
     }
 
     trained_models = {}
     accuracies = {}
 
     for name, model in models.items():
-        model.fit(X_train, y_train)
+        try:
+            model.fit(X_train, y_train, eval_set=[(X_test, y_test)], early_stopping_rounds=30, verbose=False)
+        except TypeError:
+            model.fit(X_train, y_train)
+
         preds = model.predict(X_test)
         acc = accuracy_score(y_test, preds)
         trained_models[name] = model
@@ -84,24 +103,24 @@ def train_all_models(df):
 
     return trained_models, features, accuracies
 
-# --- PREDICTION FUNCTION ---
 def predict_latest(model, df, features):
     X_latest = df[features].iloc[-1:]
     proba = model.predict_proba(X_latest)[0][1]
     pred = model.predict(X_latest)[0]
     return pred, proba
 
-# --- MASHWARA ---
 def get_mashwara(signal, prob, mode):
     if signal == 1 and prob > 0.65:
         msg = f"{mode} signal kehta hai BUY karo! (Confidence: {prob:.2f})"
+        color = "#28a745"
     elif signal == 1:
         msg = f"{mode} signal BUY ki taraf hai, magar confidence kam hai ({prob:.2f})."
+        color = "#ffc107"
     else:
         msg = f"{mode} signal SELL keh raha hai. (Confidence: {prob:.2f})"
-    return f"<p style='font-size:22px; font-weight:bold; color:#2E86C1;'>{msg}</p>"
+        color = "#dc3545"
+    return f"<p style='font-size:22px; font-weight:bold; color:{color};'>{msg}</p>"
 
-# --- CHART ---
 def draw_chart(df, title):
     fig = go.Figure()
     fig.add_trace(go.Candlestick(x=df['timestamp'], open=df['open'], high=df['high'], low=df['low'], close=df['close'], name='Candles'))
@@ -111,30 +130,37 @@ def draw_chart(df, title):
     fig.update_layout(title=title, xaxis_rangeslider_visible=False)
     return fig
 
-# --- BACKTEST ---
 def realistic_backtest(df, model, features, initial_balance=1000):
     df = df.copy()
     df['prediction'] = model.predict(df[features])
     balance = initial_balance
     position = None
     trades = []
-    for i in range(len(df)-1):
+
+    for i in range(len(df) - 1):
         pred = df['prediction'].iloc[i]
         price = df['close'].iloc[i]
         atr = df['atr'].iloc[i]
         slippage = 0.001
         fee = 0.001
 
-        if pred == 1 and not position:
-            entry = price * (1 + slippage)
-            stop = entry - atr * 1.5
-            target = entry + atr * 3
-            position = 'long'
+        if pred == 1 and position is None:
+            entry_price = price * (1 + slippage)
+            position = {
+                'entry': entry_price,
+                'stop': entry_price - atr * 1.5,
+                'target': entry_price + atr * 3
+            }
 
-        elif position == 'long':
-            close = price
-            if close <= stop or close >= target or pred == 0:
-                pnl = (close - entry) - (entry * fee) - (close * fee)
+        elif position is not None:
+            close_price = price
+            exit_trade = False
+
+            if close_price <= position['stop'] or close_price >= position['target'] or pred == 0:
+                exit_trade = True
+
+            if exit_trade:
+                pnl = (close_price - position['entry']) - (position['entry'] * fee) - (close_price * fee)
                 balance += pnl
                 trades.append(pnl)
                 position = None
@@ -149,16 +175,21 @@ sc_df = fetch_data('5m', 1000)
 sw_df = fetch_data('1h', 1000)
 
 # --- TRAIN MODELS ---
-sc_models, sc_features, sc_accuracies = train_all_models(sc_df) if sc_df is not None else ({}, [], {})
-sw_models, sw_features, sw_accuracies = train_all_models(sw_df) if sw_df is not None else ({}, [], {})
+sc_models, sc_features, sc_accuracies = {}, [], {}
+sw_models, sw_features, sw_accuracies = {}, [], {}
+
+if sc_df is not None:
+    sc_df_hash = hash_df(sc_df)
+    sc_models, sc_features, sc_accuracies = train_all_models(sc_df_hash, sc_df)
+
+if sw_df is not None:
+    sw_df_hash = hash_df(sw_df)
+    sw_models, sw_features, sw_accuracies = train_all_models(sw_df_hash, sw_df)
 
 # --- MODEL SELECTOR ---
-# Add a blank line above the model selector
 st.markdown("")
-# st.markdown("<h4 style='text-align: center; color: white; margin-bottom: 10px;'>Select ML Model</h4>", unsafe_allow_html=True)
-# Model selector with smaller title and refined styling
 selected_model_name = option_menu(
-    menu_title=None,  # Markdown-style smaller title (H3)
+    menu_title=None,
     options=["RandomForest", "LightGBM", "XGBoost"],
     icons=["tree", "lightbulb", "fire"],
     menu_icon="cast",
@@ -222,39 +253,54 @@ with col2:
         st.markdown(f"📈 **Profit:** ${sw_profit:.2f}")
         st.markdown(f"✅ **Accuracy:** {sw_acc:.2f}% over {sw_trades} trades")
 
-# --- SIDE-BY-SIDE COMPARISON ---
+# --- TRANSPARENT TABLE STYLING ---
 st.markdown("---")
-st.markdown("### 🤖 Side-by-side ML Model Predictions & Confidence")
+st.subheader("📊 Model Accuracy Summary (Test Set)")
 
-def get_pred_prob(model, df_raw, features):
-    if model and df_raw is not None:
-        df_prep, _ = prepare_features(df_raw)
-        p, pr = predict_latest(model, df_prep, features)
-        return ("BUY" if p == 1 else "SELL"), pr
-    return "N/A", 0.0
+styled_df = (
+    pd.DataFrame({
+        'Model': list(sc_accuracies.keys()),
+        'Scalping Accuracy (%)': [sc_accuracies.get(m, 0) * 100 for m in sc_accuracies.keys()],
+        'Swing Accuracy (%)': [sw_accuracies.get(m, 0) * 100 for m in sc_accuracies.keys()],
+    })
+    .set_index('Model')
+    .style
+    .format("{:.2f}")
+    .background_gradient(subset=['Scalping Accuracy (%)'], cmap='Greens')
+    .background_gradient(subset=['Swing Accuracy (%)'], cmap='Purples')
+    .set_properties(**{
+        'font-size': '30px',
+        'font-weight': 'bold',
+        'border': '1px solid #444',
+        'text-align': 'center',
+        'background-color': 'transparent',   # <--- Transparent Background
+        'color': '#fff',
+    })
+    .set_table_styles([
+        {
+            'selector': 'thead',
+            'props': [
+                ('background-color', 'rgba(255, 255, 255, 0.05)'),  # Semi-transparent head
+                ('color', '#fff'),
+                ('font-size', '30px'),
+                ('font-weight', 'bold')
+            ]
+        },
+        {
+            'selector': 'th',
+            'props': [('text-align', 'center')]
+        }
+    ])
+)
 
-col3, col4, col5 = st.columns(3)
+st.dataframe(styled_df, use_container_width=True)
 
-with col3:
-    st.markdown("#### RandomForest")
-    sc_rf_pred, sc_rf_prob = get_pred_prob(sc_models.get('RandomForest'), sc_df, sc_features)
-    sw_rf_pred, sw_rf_prob = get_pred_prob(sw_models.get('RandomForest'), sw_df, sw_features)
-    st.markdown(f"**⚡Scalping:** {sc_rf_pred} (Confidence: {sc_rf_prob:.2f})")
-    st.markdown(f"**📊Swing:** {sw_rf_pred} (Confidence: {sw_rf_prob:.2f})")
-    st.markdown(f"✅Accuracy: {sc_accuracies.get('RandomForest', 0)*100:.2f}% (Scalping)")
+st.markdown(
+    """
+    <div style='font-size:20px; color:#bbb; margin-top:8px;'>
+    💡 Accuracy is based on test set (last 1000 candles). Color intensity = model performance.
+    </div>
+    """, unsafe_allow_html=True
+)
 
-with col4:
-    st.markdown("#### LightGBM")
-    sc_lgb_pred, sc_lgb_prob = get_pred_prob(sc_models.get('LightGBM'), sc_df, sc_features)
-    sw_lgb_pred, sw_lgb_prob = get_pred_prob(sw_models.get('LightGBM'), sw_df, sw_features)
-    st.markdown(f"**⚡Scalping:** {sc_lgb_pred} (Confidence: {sc_lgb_prob:.2f})")
-    st.markdown(f"**📊Swing:** {sw_lgb_pred} (Confidence: {sw_lgb_prob:.2f})")
-    st.markdown(f"✅Accuracy: {sc_accuracies.get('LightGBM', 0)*100:.2f}% (Scalping)")
 
-with col5:
-    st.markdown("#### XGBoost")
-    sc_xgb_pred, sc_xgb_prob = get_pred_prob(sc_models.get('XGBoost'), sc_df, sc_features)
-    sw_xgb_pred, sw_xgb_prob = get_pred_prob(sw_models.get('XGBoost'), sw_df, sw_features)
-    st.markdown(f"**⚡Scalping:** {sc_xgb_pred} (Confidence: {sc_xgb_prob:.2f})")
-    st.markdown(f"**📊Swing:** {sw_xgb_pred} (Confidence: {sw_xgb_prob:.2f})")
-    st.markdown(f"✅Accuracy: {sc_accuracies.get('XGBoost', 0)*100:.2f}% (Scalping)")
